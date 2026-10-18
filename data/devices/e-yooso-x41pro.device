@@ -1,0 +1,5 @@
+[Device]
+Name=E-YOOSO X-41 Pro
+DeviceMatch=usb:36b7:fd15
+DeviceType=mouse
+Driver=redragon
