@@ -203,6 +203,43 @@ redragon_encode_dpi(unsigned int dpi)
 	return 0;
 }
 
+/* Device button action codes (the "Fun" value in a button record). */
+#define REDRAGON_ACT_LEFT	1
+#define REDRAGON_ACT_RIGHT	2
+#define REDRAGON_ACT_MIDDLE	3
+#define REDRAGON_ACT_PREV	4
+#define REDRAGON_ACT_NEXT	5
+#define REDRAGON_ACT_MACRO	6
+#define REDRAGON_ACT_DPI_UP	12
+#define REDRAGON_ACT_DPI_DOWN	48
+#define REDRAGON_ACT_DBLCLICK	49
+
+/* Map a ratbag button action to the device's action code. */
+static uint8_t
+redragon_action_code(const struct ratbag_button_action *action)
+{
+	switch (action->type) {
+	case RATBAG_BUTTON_ACTION_TYPE_BUTTON:
+		/* mouse buttons 1..5 == codes 1..5 */
+		return (uint8_t)action->action.button;
+	case RATBAG_BUTTON_ACTION_TYPE_SPECIAL:
+		switch (action->action.special) {
+		case RATBAG_BUTTON_ACTION_SPECIAL_RESOLUTION_UP:
+			return REDRAGON_ACT_DPI_UP;
+		case RATBAG_BUTTON_ACTION_SPECIAL_RESOLUTION_DOWN:
+			return REDRAGON_ACT_DPI_DOWN;
+		case RATBAG_BUTTON_ACTION_SPECIAL_DOUBLECLICK:
+			return REDRAGON_ACT_DBLCLICK;
+		default:
+			return 0;
+		}
+	case RATBAG_BUTTON_ACTION_TYPE_MACRO:
+		return REDRAGON_ACT_MACRO;
+	default:
+		return 0;
+	}
+}
+
 /* ------------------------------------------------------------------ */
 /* Feature setters                                                     */
 /* ------------------------------------------------------------------ */
@@ -266,34 +303,31 @@ static int
 redragon_set_button(struct ratbag_device *device, struct ratbag_button *button)
 {
 	uint8_t buf[REDRAGON_REPORT_SIZE] = {0};
+	uint8_t code = redragon_action_code(&button->action);
 
 	/*
 	 * Recovered button refresh: family 0xf3, opcode 0x48, header
 	 * `02 F3 48 04`, per-button record at buf[11..] (0x80 marker).
-	 * TODO(hardware-validate): the action -> wire record mapping (mouse
-	 * button / special / key / macro). Packs type + first payload byte.
+	 *
+	 * TODO(hardware-validate): the exact record packing. buf[11]=0x80 and
+	 * the multi-record layout are recovered; the slot/action/macro field
+	 * offsets below are a best-effort reconstruction. Confirm against a
+	 * QuerySingleButton dump (the probe logs raw query bytes) and then
+	 * finalise here.
 	 */
 	buf[1] = REDRAGON_FAMILY_BUTTON;
 	buf[2] = REDRAGON_OP_BUTTON_REFRESH;
 	buf[3] = 0x04;
 	buf[4] = 0x08;
-	buf[11] = 0x80;
-	buf[12] = button->index;
 
-	switch (button->action.type) {
-	case RATBAG_BUTTON_ACTION_TYPE_BUTTON:
-		buf[13] = (uint8_t)button->action.action.button;
-		break;
-	case RATBAG_BUTTON_ACTION_TYPE_SPECIAL:
-		buf[13] = (uint8_t)button->action.action.special;
-		break;
-	case RATBAG_BUTTON_ACTION_TYPE_KEY:
-		buf[13] = (uint8_t)button->action.action.key;
-		break;
-	case RATBAG_BUTTON_ACTION_TYPE_NONE:
-	default:
-		buf[13] = 0x00;
-		break;
+	buf[11] = 0x80;			/* record marker (recovered) */
+	buf[12] = (uint8_t)button->index;	/* button slot */
+	buf[13] = code;			/* device action code */
+
+	/* Macro KeyInfo (map/L/H) lives in the following bytes for macros. */
+	if (button->action.type == RATBAG_BUTTON_ACTION_TYPE_MACRO &&
+	    button->action.macro) {
+		/* TODO(hardware-validate): encode macro events into the record. */
 	}
 
 	return redragon_send_cmd(device, buf, REDRAGON_QUERY_SIZE);
@@ -473,9 +507,50 @@ redragon_probe(struct ratbag_device *device)
 			ratbag_button_enable_action_type(button, RATBAG_BUTTON_ACTION_TYPE_MACRO);
 			ratbag_button_enable_action_type(button, RATBAG_BUTTON_ACTION_TYPE_NONE);
 
-			/* Default: map onto the corresponding mouse button. */
-			button->action.type = RATBAG_BUTTON_ACTION_TYPE_BUTTON;
-			button->action.action.button = button->index < 5 ? button->index + 1 : 1;
+			/*
+			 * Device default actions (see PROTOCOL-X41PRO.md button
+			 * map). Read-back will overwrite these with the device's
+			 * real config once QuerySingleButton parsing is calibrated.
+			 */
+			switch (button->index) {
+			case 0:
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_BUTTON;
+				button->action.action.button = 1;
+				break;
+			case 1:
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_BUTTON;
+				button->action.action.button = 2;
+				break;
+			case 2:
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_BUTTON;
+				button->action.action.button = 3;
+				break;
+			case 3:
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_BUTTON;
+				button->action.action.button = 4;
+				break;
+			case 4:
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_BUTTON;
+				button->action.action.button = 5;
+				break;
+			case 5:
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_SPECIAL;
+				button->action.action.special = RATBAG_BUTTON_ACTION_SPECIAL_RESOLUTION_UP;
+				break;
+			case 6:
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_SPECIAL;
+				button->action.action.special = RATBAG_BUTTON_ACTION_SPECIAL_RESOLUTION_DOWN;
+				break;
+			case 7:
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_SPECIAL;
+				button->action.action.special = RATBAG_BUTTON_ACTION_SPECIAL_DOUBLECLICK;
+				break;
+			default:
+				/* macro1/2/3: real macro populated on read-back. */
+				button->action.type = RATBAG_BUTTON_ACTION_TYPE_BUTTON;
+				button->action.action.button = 1;
+				break;
+			}
 		}
 
 		ratbag_profile_for_each_led(profile, led) {

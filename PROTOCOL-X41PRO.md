@@ -94,7 +94,67 @@ mode byte. Log: `slotSendLedState iProfile=%d i=%d r=%d g=%d b=%d`.
 > probes `ratbag_hidraw_has_report()` + the vendor usage page to adapt. Confirm with
 > `lsusb -v`.
 
-## 5. Config data model (from `Config.ini` / `*.prof` — plain INI)
+## 5. Input reports (from live button capture)
+
+The mouse emits 8-byte HID input reports on the mouse interface:
+
+| Byte | Meaning |
+|---|---|
+| `byte[0]` | button bitmask: bit0=left, bit1=right, bit2=wheel-click, bit3=prev, bit4=next |
+| `byte[1]`,`byte[2]` | vendor codes for non-standard buttons (DPI/macro) |
+| `byte[3..5]` | x/y motion (0 when only a button is pressed) |
+| `byte[6]` | wheel (0x01=up, 0xff=down) |
+| `byte[7]` | 0 |
+
+Observed per control:
+```
+left        01 00 00 00 00 00 00 00
+right       02 00 00 00 00 00 00 00
+wheel-click 04 00 00 00 00 00 00 00
+prev        08 00 00 00 00 00 00 00
+next        10 00 00 00 00 00 00 00
+wheel-up    00 00 00 00 00 00 01 00
+wheel-down  00 00 00 00 00 00 ff 00
+dpi-up      08 02 02 00 00 00 00 00
+dpi-down    08 02 01 00 00 00 00 00
+double-click 01 00 00 00 00 00 00 00   (emits left-click)
+macro1      00 00 e2 00 00 00 00 00
+macro2      00 00 e0 00 00 00 00 00
+macro3      00 00 e1 00 00 00 00 00
+```
+
+## 6. Button map & action codes (from Default.bin + input capture)
+
+There are **11 remappable buttons** (wheel up/down are the scroll axis, not buttons).
+The config slots (indices 0..10) map to physical buttons with these default
+action codes (Default.bin `M1..M11 = 1,2,3,4,5,12,48,49,6,6,6`):
+
+| idx | physical | input | device action code | ratbag action |
+|----:|---|---|---:|---|
+| 0 | left | `byte0` 0x01 | 1 | BUTTON 1 |
+| 1 | right | `byte0` 0x02 | 2 | BUTTON 2 |
+| 2 | wheel-click | `byte0` 0x04 | 3 | BUTTON 3 (middle) |
+| 3 | prev/back | `byte0` 0x08 | 4 | BUTTON 4 |
+| 4 | next/fwd | `byte0` 0x10 | 5 | BUTTON 5 |
+| 5 | dpi-up | `08 02 02` | 12 | SPECIAL_RESOLUTION_UP |
+| 6 | dpi-down | `08 02 01` | 48 | SPECIAL_RESOLUTION_DOWN |
+| 7 | double-click | (emits left) | 49 | SPECIAL_DOUBLECLICK |
+| 8 | macro1 | `00 00 e2` | 6 | MACRO |
+| 9 | macro2 | `00 00 e0` | 6 | MACRO |
+| 10 | macro3 | `00 00 e1` | 6 | MACRO |
+
+Device action-code table (the `Fun` value written into a button record):
+`1=left, 2=right, 3=middle, 4=prev, 5=next, 6=macro, 12=dpi-up, 48=dpi-down,
+49=double-click`. The idx 5/6/7 → 12/48/49 assignment is inferred from
+Default.bin ordering; confirm against QuerySingleButton read-back.
+
+> REMAINING CALIBRATION: the exact **feature-report button record** packing
+> (where the action code + macro KeyInfo `map/L/H` land in the 64-byte write) is
+> still approximate. Recover it by dumping QuerySingleButton responses per index
+> (the driver already logs raw query bytes) or a usbmon capture, then finalise
+> `redragon_set_button()`.
+
+## 7. Config data model (from `Config.ini` / `*.prof` — plain INI)
 
 Profiles: 5 (`PROFILE_0..4`).
 Per profile:
