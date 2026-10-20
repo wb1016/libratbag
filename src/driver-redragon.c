@@ -118,6 +118,32 @@ static const uint8_t BTN_DEFAULT[NUM_BUTTONS][4] = {
 	{ 0x90, 0x00, 0xe1, 0x00 },	/* 10 macro3   */
 };
 
+static int write_report(struct ratbag_device *device, uint8_t id, uint8_t *buf, size_t len);
+
+/*
+ * Global button / hardware config (report 0x03, opcode 0x20). RDCfg.exe always
+ * writes this once before the profile blocks; omitting it leaves the buttons
+ * non-functional. Static default captured from RDCfg.exe.
+ */
+static const uint8_t BTN_GLOBAL_CFG[64] = {
+	0x03, 0xf3, 0x20, 0x00, 0x20, 0x00, 0x00, 0x00,
+	0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00,
+	0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x80,
+	0x03, 0xc0, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00,
+	0x01, 0x00, 0x01, 0x00, 0x1f, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+static int
+write_global_cfg(struct ratbag_device *device)
+{
+	uint8_t b[CFG_SIZE];
+	memcpy(b, BTN_GLOBAL_CFG, CFG_SIZE);
+	return write_report(device, RID_CFG, b, CFG_SIZE);
+}
+
 /* ------------------------------------------------------------------ */
 
 static int
@@ -283,20 +309,30 @@ redragon_commit(struct ratbag_device *device)
 	struct ratbag_profile *profile;
 
 	ctrl(device, CTRL_BEGIN);
+	write_global_cfg(device);
 
+	/* LED config */
 	list_for_each(profile, &device->profiles, link) {
-		if (!profile->dirty)
-			continue;
-
-		set_poll_rate(device, profile->hz);
-		write_profile(device, profile);
-
 		struct ratbag_led *led;
 		ratbag_profile_for_each_led(profile, led) {
 			if (!led->dirty)
 				continue;
 			set_led(device, led);
 		}
+	}
+
+	/* profile blocks (matches RDCfg.exe ordering) */
+	list_for_each(profile, &device->profiles, link) {
+		if (!profile->dirty)
+			continue;
+		write_profile(device, profile);
+	}
+
+	/* then poll rates */
+	list_for_each(profile, &device->profiles, link) {
+		if (!profile->dirty)
+			continue;
+		set_poll_rate(device, profile->hz);
 	}
 
 	ctrl(device, CTRL_COMMIT);
