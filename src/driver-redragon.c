@@ -46,6 +46,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <linux/input.h>
 
 /* ---- report ids / sizes (from report descriptor) ---- */
 #define RID_CMD		0x02	/* 15-byte control */
@@ -94,6 +95,27 @@ static unsigned int DPIS[] = { 5, 10, 20, 30, 40 };
 
 struct redragon_data {
 	uint8_t active;
+	/* default wire records for each button slot (from RDCfg.exe capture) */
+	uint8_t btn_rec[NUM_BUTTONS][4];
+};
+
+/*
+ * Default button records (profile 0 from the live capture). Used verbatim for
+ * buttons the user hasn't modified so that Apply is idempotent -- otherwise a
+ * write-only driver would clobber macros / dpi-up with wrong defaults.
+ */
+static const uint8_t BTN_DEFAULT[NUM_BUTTONS][4] = {
+	{ 0x81, 0x00, 0x00, 0x00 },	/* 0 left      */
+	{ 0x82, 0x00, 0x00, 0x00 },	/* 1 right     */
+	{ 0x83, 0x00, 0x00, 0x00 },	/* 2 wheel-click */
+	{ 0x85, 0x00, 0x00, 0x00 },	/* 3 next      */
+	{ 0x84, 0x00, 0x00, 0x00 },	/* 4 prev      */
+	{ 0x99, 0x81, 0x03, 0x0a },	/* 5 dpi-up    */
+	{ 0x8a, 0x00, 0x00, 0x00 },	/* 6 dpi-down  */
+	{ 0x89, 0x00, 0x00, 0x00 },	/* 7 double-click */
+	{ 0x90, 0x00, 0xe2, 0x00 },	/* 8 macro1    */
+	{ 0x90, 0x00, 0xe0, 0x00 },	/* 9 macro2    */
+	{ 0x90, 0x00, 0xe1, 0x00 },	/* 10 macro3   */
 };
 
 /* ------------------------------------------------------------------ */
@@ -223,18 +245,25 @@ write_profile(struct ratbag_device *device, struct ratbag_profile *profile)
 
 	/* button map */
 	b[OFF_BTNCNT] = NUM_BUTTONS;
+	struct redragon_data *d = ratbag_get_drv_data(device);
 	struct ratbag_button *btn;
 	i = 0;
 	ratbag_profile_for_each_button(profile, btn) {
 		if (i >= NUM_BUTTONS)
 			break;
-		uint8_t mid = 0;
-		uint8_t act = action_code(&btn->action, &mid);
 		int o = OFF_BTNREC + i * BTNREC_SIZE;
-		b[o + 0] = act;
-		b[o + 1] = 0x00;
-		b[o + 2] = mid;
-		b[o + 3] = 0x00;
+		if (btn->dirty) {
+			uint8_t mid = 0;
+			uint8_t act = action_code(&btn->action, &mid);
+			b[o + 0] = act;
+			b[o + 1] = 0x00;
+			b[o + 2] = mid;
+			b[o + 3] = 0x00;
+			memcpy(d->btn_rec[i], &b[o], 4);
+		} else {
+			/* preserve the real on-device record (idempotent apply) */
+			memcpy(&b[o], d->btn_rec[i], 4);
+		}
 		i++;
 	}
 	/* extra + scroll records (static defaults from capture) */
@@ -295,6 +324,7 @@ redragon_probe(struct ratbag_device *device)
 	if (!d)
 		return -ENOMEM;
 	ratbag_set_drv_data(device, d);
+	memcpy(d->btn_rec, BTN_DEFAULT, sizeof(d->btn_rec));
 
 	/*
 	 * Write-capable for now: seed from the vendor defaults and let the user
@@ -343,7 +373,12 @@ redragon_probe(struct ratbag_device *device)
 				btn->action.action.special = RATBAG_BUTTON_ACTION_SPECIAL_RESOLUTION_DOWN; break;
 			case 7: btn->action.type = RATBAG_BUTTON_ACTION_TYPE_SPECIAL;
 				btn->action.action.special = RATBAG_BUTTON_ACTION_SPECIAL_DOUBLECLICK; break;
-			default: btn->action.action.button = 1; break;
+			default:
+				/* macro1/2/3: run a device-side macro; placeholder key
+				 * for display (real key sequence lives in report 0x05/0x06) */
+				ratbag_button_macro_new_from_keycode(btn,
+						KEY_F13 + (btn->index - 8), 0);
+				break;
 			}
 		}
 
