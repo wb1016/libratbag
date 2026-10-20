@@ -28,24 +28,65 @@ Confirm exact PID + report descriptor with `lsusb -v` / `usbhid` on the real dev
   - `0x485128` = `hid_send_feature_report(handle, buf, len)`
   - `0x485120` = `hid_get_feature_report(handle, buf, len)`
 
-## 3. Feature-report framing (payload bytes)
+## 3. Wire protocol — DEFINITIVE (from live capture of RDCfg.exe)
 
+Config is on hidraw node **fd=77**, Usage Page **0xFFA0** (vendor). All config goes
+over HID **feature reports**. The report IDs are **type-based** (NOT request/response):
+
+| Report ID | Payload | Purpose |
+|---|---|---|
+| `0x02` | 15 B | control commands (family `0xf1`/`0xf5`) |
+| `0x03` | 63 B | button + LED config (family `0xf3`) |
+| `0x04` | 255 B | profile block (family `0xf3`) |
+| `0x05` | 1023 B | macro storage |
+| `0x06` | 2047 B | macro storage |
+
+Framing: `buf[0]`=report id, `buf[1]`=family (`0xf1` set / `0xf3` config / `0xf5` control),
+`buf[2]`=opcode/address, `buf[2..3]`=address for config blocks.
+
+### Control (report 0x02)
 ```
-byte[0] : type / direction  0x02 = host->device command or query-request
-                            0x03 = device->host response (read)
-byte[1] : command family    0xF1 = "set" (e.g. poll rate)
-                            0xF2 = query / read
-                            0xF3 = button / keymap refresh
-byte[2..]: opcode + payload (family-specific)
+02 F5 00 ...   write-begin
+02 F5 01 ...   write-commit
+02 F1 02 XX    poll rate, XX = one-hot 01/02/04/08/10
+```
+RDCfg.exe writes: begin → button(03) → LED(03) → 5× profile(04) → 5× pollrate(02) → commit.
+
+### LED (report 0x03, `03 F3 46 04 32`)
+Header then 5× 8-byte records: `[80 R G B 02 04 01 02]` (80=marker, RGB, then mode/
+bright/effect params).
+
+### Profile block (report 0x04, `04 F3 <addr> af 00 00 00 05 00 <idx> 00 ...`)
+5 profiles at addresses `0x40, 0x100, 0x1b0, 0x260, 0x310`. Layout of the 255-byte block:
+```
+off 0  : 04 F3            report id + family
+off 2  : addr:u16         profile base address
+off 4  : 0x00af           data length
+off 8  : 0x0005           DPI stage count
+off 10 : profile index (0..4)
+off 12 : DPI stage[0..4], 6 bytes each: [used, x_lo, x_hi, y_lo, y_hi, 0]
+         x/y raw values 5,10,20,30,40
+off 42 : 0 (reserved, 24 bytes)
+off 66 : 0x0b             button count (11)
+off 68 : button[0..10], 4 bytes each: [action, p1, p2, p3]
+off 112: 0x8d 00 00 00    extra record
+off 116: 8b 00 00 00      scroll-up action
+off 120: 8c 00 00 00      scroll-down action
+off 124: ff ff ff ff      marker
+off 128: 0 (rest)
 ```
 
-> OPEN ITEM: whether `byte[0]` is a true HID report ID or the first payload byte must be
-> confirmed against the report descriptor (`lsusb -v`). If the descriptor declares report IDs,
-> `byte[0]` is the report ID and the family byte shifts to `byte[0]`.
+### Button record `[action, p1, p2, p3]`
+- Mouse button N (1..5): `action = 0x80 | N` (1=left,2=right,3=middle,4=prev,5=next)
+- Special: `0x89`=double-click, `0x8a`=dpi-down, `0x8d`=?, `0x99`=dpi-up (+params `81 03 0a`)
+- Macro: `action=0x90`, `p2`=macro id (`0xe0`/`0xe1`/`0xe2`); macro key data in report 0x05/0x06
 
-### Multi-part sequencing
-- Multi-chunk writes insert a **50 ms** delay between chunks (`Sleep(0x32)`).
-- Query request→response inserts a **10 ms** delay (`Sleep(0x0a)`).
+Default button map (slots 0..10): left, right, wheel-click, next, prev, dpi-up, dpi-down,
+double-click, macro1, macro2, macro3.
+
+> NOTE: the earlier static-RE guess that report IDs were "request 0x02 / response 0x03" was
+> WRONG — they are report *types*. QuerySingleButton (read) is a separate `02 F2` query; the
+> config writes above are the authoritative format.
 
 ## 4. Command families & opcodes (decompiled via r2ghidra — verified)
 
