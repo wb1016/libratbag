@@ -56,6 +56,9 @@
 #define CFG_SIZE	64
 #define PROFILE_SIZE	256
 
+/* inter-write delay; RDCfg.exe spaces feature writes ~50 ms apart */
+#define REDRAGON_WRITE_DELAY_MS	20
+
 /* ---- family (buf[1]) ---- */
 #define FAM_SET		0xf1
 #define FAM_CFG		0xf3
@@ -151,8 +154,19 @@ write_global_cfg(struct ratbag_device *device)
 static int
 redragon_test_hidraw(struct ratbag_device *device)
 {
-	/* config lives on the vendor usage page 0xffa0 */
-	return ratbag_hidraw_has_vendor_page(device) ? 1 : 0;
+	unsigned i;
+
+	/*
+	 * The config feature reports live *only* on usage page 0xffa0. Other
+	 * interfaces expose 0xff00 vendor pages too, so match 0xffa0 exactly
+	 * or writes land on the wrong interface and are silently ignored.
+	 */
+	for (i = 0; i < device->hidraw[0].num_reports; i++) {
+		if (ratbag_hidraw_get_usage_page(device,
+				device->hidraw[0].reports[i].report_id) == 0xffa0)
+			return 1;
+	}
+	return 0;
 }
 
 static int
@@ -160,9 +174,14 @@ write_report(struct ratbag_device *device, uint8_t id, uint8_t *buf, size_t len)
 {
 	buf[0] = id;
 	int rc = ratbag_hidraw_set_feature_report(device, id, buf, len);
-	if (rc < 0)
+	if (rc < 0) {
 		log_error(device->ratbag, "write report 0x%02x failed: %d\n", id, rc);
-	return rc < 0 ? rc : 0;
+		return rc;
+	}
+
+	/* RDCfg.exe spaces feature writes ~50 ms apart; give the MCU time. */
+	msleep(REDRAGON_WRITE_DELAY_MS);
+	return 0;
 }
 
 static int
