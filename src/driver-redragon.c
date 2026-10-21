@@ -90,6 +90,8 @@ static const uint16_t prof_addr[5] = { 0x40, 0x100, 0x1b0, 0x260, 0x310 };
 
 /* report rates (Hz); wire value is one-hot bit index */
 static unsigned int RATES[] = { 125, 250, 500, 1000, 2000 };
+/* default report rate per profile (RDCfg.exe writes 04,01,02,08,10) */
+static unsigned int DEFAULT_HZ[] = { 500, 125, 250, 1000, 2000 };
 /* raw DPI stage x/y values seen on the wire (TODO: scale to real DPI) */
 static unsigned int DPIS[] = { 5, 10, 20, 30, 40 };
 
@@ -321,17 +323,13 @@ redragon_commit(struct ratbag_device *device)
 		}
 	}
 
-	/* profile blocks (matches RDCfg.exe ordering) */
+	/* profile blocks (matches RDCfg.exe: write ALL profiles) */
 	list_for_each(profile, &device->profiles, link) {
-		if (!profile->dirty)
-			continue;
 		write_profile(device, profile);
 	}
 
-	/* then poll rates */
+	/* then poll rates (matches RDCfg.exe: write ALL profiles' rates) */
 	list_for_each(profile, &device->profiles, link) {
-		if (!profile->dirty)
-			continue;
 		set_poll_rate(device, profile->hz);
 	}
 
@@ -373,7 +371,7 @@ redragon_probe(struct ratbag_device *device)
 	struct ratbag_profile *profile;
 	ratbag_device_for_each_profile(device, profile) {
 		profile->is_active = (profile->index == d->active);
-		profile->hz = RATES[3];	/* 1000 */
+		profile->hz = DEFAULT_HZ[profile->index % ARRAY_LENGTH(DEFAULT_HZ)];
 		ratbag_profile_set_cap(profile, RATBAG_PROFILE_CAP_WRITE_ONLY);
 		ratbag_profile_set_report_rate_list(profile, RATES, ARRAY_LENGTH(RATES));
 
